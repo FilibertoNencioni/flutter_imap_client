@@ -1,4 +1,4 @@
-import 'package:flutter_imap_client/enums/imap_state.dart';
+import 'package:flutter_imap_client/src/enums/imap_state.dart';
 
 class ImapCommandBadState implements Exception {
   final String command;

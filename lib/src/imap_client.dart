@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter_imap_client/classes/imap_pending_command.dart';
-import 'package:flutter_imap_client/enums/imap_state.dart';
-import 'package:flutter_imap_client/exceptions/imap_bad_response.dart';
-import 'package:flutter_imap_client/exceptions/imap_command_bad_state.dart';
-import 'package:flutter_imap_client/exceptions/imap_invalid_response.dart';
-import 'package:flutter_imap_client/exceptions/imap_no_response.dart';
+import 'package:flutter_imap_client/src/classes/imap_pending_command.dart';
+import 'package:flutter_imap_client/src/enums/imap_state.dart';
+import 'package:flutter_imap_client/src/exceptions/imap_bad_response.dart';
+import 'package:flutter_imap_client/src/exceptions/imap_command_bad_state.dart';
+import 'package:flutter_imap_client/src/exceptions/imap_invalid_response.dart';
+import 'package:flutter_imap_client/src/exceptions/imap_no_response.dart';
 
 //**
 //  DOCS!
