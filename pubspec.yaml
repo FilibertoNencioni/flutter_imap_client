@@ -1,7 +1,7 @@
 name: flutter_imap_client
-description: A sample command-line application.
+description: A simple IMAP client for Dart and Flutter.
 version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+repository: https://github.com/FilibertoNencioni/flutter_imap_client
 
 environment:
   sdk: ^3.8.1

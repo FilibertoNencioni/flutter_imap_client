@@ -3,8 +3,10 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_imap_client/src/classes/imap_pending_command.dart';
 import 'package:flutter_imap_client/src/enums/imap_state.dart';
+import 'package:flutter_imap_client/src/enums/tls_state.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_bad_response.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_command_bad_state.dart';
+import 'package:flutter_imap_client/src/exceptions/imap_invalid_capabilities.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_invalid_response.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_no_response.dart';
 
@@ -31,17 +33,22 @@ class ImapClient {
   final Map<String, ImapPendingCommand> _pending = {};
 
   /// Completer for the initial greeting from the server.
-  final Completer<bool> _greetingCompleter = Completer<bool>();
+  final Completer<String> _greetingCompleter = Completer<String>();
 
   /// TCP data buffer for line parsing
   final StringBuffer _buffer = StringBuffer();
 
-  /// Is TLS processing (no commands can be sent)
-  bool _isTslProcessing = false;
+  /// Current TLS state
+  TlsState tlsState = TlsState.none;
+
+  /// If true, SSL certificate errors will be ignored (useful for self-signed certificates)
+  bool ignoreSsl;
+
+  /// Stores the capabilities of the IMAP server.
+  List<String> _capabilities = [];
 
 
-
-  ImapClient({required this.host, required this.port});
+  ImapClient({required this.host, required this.port, this.ignoreSsl = false});
 
   /// Generates a unique tag for the IMAP command.
   String _generateUniqueTag(){
@@ -54,7 +61,6 @@ class ImapClient {
 
     return strTag;
   }
-
 
   /// Handle a single IMAP line
   void _handleLine(String line) {
@@ -88,7 +94,7 @@ class ImapClient {
 
     //CHECKS FOR GREETING (only once)
     if(!_greetingCompleter.isCompleted){
-      _greetingCompleter.complete(chunk.startsWith("* OK"));
+      _greetingCompleter.complete(chunk);
     }
 
 
@@ -112,7 +118,7 @@ class ImapClient {
   Future<List<String>> _sendCommand(String command) async {
     if (socket == null) {
       throw Exception("Socket is not connected.");
-    } else if (_isTslProcessing && command != "STARTTLS") {
+    } else if (tlsState == TlsState.processing && command != "STARTTLS") {
       throw Exception("Cannot send commands while TLS processing is active.");
     }
 
@@ -145,31 +151,77 @@ class ImapClient {
 
   }
 
+  /// Reloads the capabilities from the server.
+  /// 
+  /// Throws [ImapInvalidCapabilities] if no capabilities are returned.
+  Future<void> _reloadCapabilities() async {
+    print("****Reloading capabilities****");
+    var response = await capability();
+    _capabilities.clear();
+
+    for(var line in response) {
+      if(line.startsWith("* CAPABILITY")) {
+        var parts = line.split(" ");
+        if(parts.length > 2) {
+          _capabilities.addAll(parts.sublist(2));
+        }
+      }
+    }
+
+    if(_capabilities.isEmpty) {
+      throw ImapInvalidCapabilities(response);
+    }
+  }
 
   /// Connects to the IMAP server.
+  /// 
+  /// Throws an [Exception] if the socket is already connected or if the greeting from the server is not OK.
+  /// Throws [ImapInvalidResponse] if the greeting fails.
+  /// Throws [ImapInvalidCapabilities] if no capabilities are returned.
   Future connect() async {
-    socket = await Socket.connect(host, port);
+    if(socket != null) {
+      throw Exception("Socket is already connected.");
+    }
+
+    bool isImplicitTls = port == 993; //RFC8314 (https://www.rfc-editor.org/info/rfc8314)
+    if(isImplicitTls){
+      socket = await SecureSocket.connect(
+        host, 
+        port,
+        onBadCertificate: ignoreSsl ? (_) => true : null
+      );
+      tlsState = TlsState.established;
+    }else{
+      socket = await Socket.connect(host, port);
+      tlsState = TlsState.none;
+    }
+    
     socket!.listen(_onResponse);
 
     
     // Checks for OK response
-    bool isGreetingOk = await _greetingCompleter.future;
+    String greetingResponse = await _greetingCompleter.future;
 
-    if(!isGreetingOk){
+    if(!greetingResponse.startsWith("* OK")){
       print("****Unable to connect to IMAP server****");
       socket!.close();
-      return;
+      throw ImapInvalidResponse(greetingResponse);
     }else {
       print("****Connected to IMAP server****");
+      await _reloadCapabilities();
     }
 
   }
+
 
   Future<bool> disconnect() async {
     try{
       await _sendCommand("LOGOUT");
       socket!.close();
       socket = null;
+      state = ImapState.nonAuthenticated;
+      tlsState = TlsState.none;
+      _capabilities.clear();
       return true;
     } on Exception catch(e){
       print("****Error while disconnecting: $e****");
@@ -212,16 +264,35 @@ class ImapClient {
         currentState: state,
         expectedState: ImapState.nonAuthenticated
       );
+    }else if(tlsState != TlsState.none) {
+      return; // Already started or completed
     }
 
-    _isTslProcessing = true;
-    await _sendCommand("STARTTLS");
-    _isTslProcessing = false;
+    tlsState = TlsState.processing;
 
-    //TODO: capabilities must be refershed
+    try{
+      await _sendCommand("STARTTLS");
+      socket = await SecureSocket.secure(
+        socket!,
+        onBadCertificate: ignoreSsl ? (_) => true : null
+      );
+      socket!.listen(_onResponse);
+      tlsState = TlsState.established;
+
+      await _reloadCapabilities();
+
+    } on Exception catch(_){
+      tlsState = TlsState.none;
+      rethrow;
+    }
+
 
   }
 
+  /// Authenticates the user using the specified authentication mechanism.
+  /// Must be used if in the capabilities the server supports the AUTHENTICATE command. (AUTH=...)
+  /// 
+  /// https://www.ietf.org/rfc/rfc9051.html#name-authenticate-command
   Future authenticate() async {
     if(state != ImapState.nonAuthenticated) {
       throw ImapCommandBadState(
@@ -234,7 +305,7 @@ class ImapClient {
     //TODO: implement
   }
 
-  Future login() async {
+  Future login(String username, String password, ) async {
     if(state != ImapState.nonAuthenticated) {
       throw ImapCommandBadState(
         command: "LOGIN",
@@ -242,6 +313,12 @@ class ImapClient {
         expectedState: ImapState.nonAuthenticated
       );
     }
+
+    //CAN'T LOGIN IF TLS IS NOT ESTABLISHED
+    if(tlsState != TlsState.established){
+      await startTls();
+    }
+
   }
 
   //#endregion
