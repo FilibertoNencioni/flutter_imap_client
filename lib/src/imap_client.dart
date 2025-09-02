@@ -7,6 +7,7 @@ import 'package:flutter_imap_client/src/enums/tls_state.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_bad_response.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_command_bad_state.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_invalid_capabilities.dart';
+import 'package:flutter_imap_client/src/exceptions/imap_invalid_request.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_invalid_response.dart';
 import 'package:flutter_imap_client/src/exceptions/imap_no_response.dart';
 
@@ -305,6 +306,14 @@ class ImapClient {
     //TODO: implement
   }
 
+  /// Logs in the user using the LOGIN command.
+  /// https://www.ietf.org/rfc/rfc9051.html#name-login-command
+  /// 
+  /// Must be used if in the capabilities the server does not support the AUTHENTICATE.
+  /// Must be used on a secure connection (TLS established), if not it will start a secure connection.
+  /// 
+  /// throws [ImapCommandBadState] if the current state is not "NOT AUTHENTICATED".
+  /// throws [ImapInvalidRequest] if the server does not support the LOGIN command.
   Future login(String username, String password, ) async {
     if(state != ImapState.nonAuthenticated) {
       throw ImapCommandBadState(
@@ -312,13 +321,35 @@ class ImapClient {
         currentState: state,
         expectedState: ImapState.nonAuthenticated
       );
-    }
-
-    //CAN'T LOGIN IF TLS IS NOT ESTABLISHED
-    if(tlsState != TlsState.established){
+    }else if(tlsState != TlsState.established){
+      //CAN'T LOGIN IF TLS IS NOT ESTABLISHED
       await startTls();
     }
+    
+    // before checking for capabilities, a secure connection is needed (or starttls) 
+    if(_capabilities.contains("LOGINDISABLED")) {
+      throw ImapInvalidRequest("LOGIN", _capabilities);
+    }
 
+    String usernameEscaped = username.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+    String passwordEscaped = password.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+
+    List<String> loginResponse = await _sendCommand('LOGIN "$usernameEscaped" "$passwordEscaped"');
+    state = ImapState.authenticated;
+
+    //Reload capabilities
+    String capabilityFromLogin = loginResponse.firstWhere(
+      (line) => line.startsWith("* CAPABILITY"),
+      orElse: () => ""
+    );
+
+    var parts = capabilityFromLogin.split(" ");
+    if(capabilityFromLogin.isNotEmpty && parts.length > 2) {
+      _capabilities = parts.sublist(2);
+    }else{
+      await _reloadCapabilities();
+    }
+    
   }
 
   //#endregion
